@@ -263,7 +263,8 @@ mod imp {
     pub fn harden(r: &mut Report) {
         // SAFETY: SetErrorMode takes flags only.
         unsafe { SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX) };
-        r.applied.push("crash dialogs/WER capture suppressed (SetErrorMode)");
+        // SetErrorMode returns the previous mode and cannot fail.
+        r.ok(true, "crash dialogs/WER capture suppressed (SetErrorMode)");
         r.missing
             .push("debugger attach blocking (not yet implemented on Windows)");
     }
