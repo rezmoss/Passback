@@ -1,0 +1,42 @@
+[package]
+name = "passback-fuzz"
+version = "0.0.0"
+publish = false
+license = "AGPL-3.0-or-later"
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+passback-crypto = { path = "../crates/passback-crypto" }
+passback-format = { path = "../crates/passback-format" }
+
+# Separate workspace so the fuzz crate (nightly-only tooling) stays out of normal builds.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "decoders"
+path = "fuzz_targets/decoders.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_file"
+path = "fuzz_targets/vault_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sealed_open"
+path = "fuzz_targets/sealed_open.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,119 @@
+name: Release
+
+# Builds every release binary from a tag with pinned toolchain and flags, publishes
+# SHA256SUMS, an SBOM, a Sigstore (keyless) signature and SLSA build provenance.
+# A second, independent Linux build must produce bit-identical binaries or the
+# release fails.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-24.04,     zig: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04,     zig: true }
+          - { target: x86_64-apple-darwin,        os: macos-15,         zig: false }
+          - { target: aarch64-apple-darwin,       os: macos-15,         zig: false }
+          - { target: x86_64-pc-windows-msvc,     os: windows-2025,     zig: false }
+          - { target: aarch64-pc-windows-msvc,    os: windows-2025,     zig: false }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.98.1"
+          targets: ${{ matrix.target }}
+      - name: Build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          USE_ZIG: ${{ matrix.zig }}
+        run: ./scripts/build-release.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: passback-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  reproduce:
+    # Rebuild the Linux binaries on a different runner image and compare.
+    needs: build
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.98.1"
+          targets: ${{ matrix.target }}
+      - name: Rebuild
+        env:
+          TARGET: ${{ matrix.target }}
+          USE_ZIG: "true"
+        run: ./scripts/build-release.sh
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: passback-${{ matrix.target }}
+          path: first
+      - name: Compare
+        run: |
+          a=$(sha256sum first/passback-${{ matrix.target }} | cut -d' ' -f1)
+          b=$(sha256sum dist/passback-${{ matrix.target }} | cut -d' ' -f1)
+          echo "first:  $a"; echo "second: $b"
+          test "$a" = "$b"
+
+  publish:
+    needs: [build, reproduce]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.98.1"
+      - name: SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --manifest-path crates/passback/Cargo.toml --format json --override-filename passback.cdx
+          mv crates/passback/passback.cdx.json dist/passback-sbom.cdx.json
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum passback-* > SHA256SUMS && cat SHA256SUMS
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+      - name: Sign checksums (Sigstore keyless)
+        working-directory: dist
+        run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/passback-*
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true

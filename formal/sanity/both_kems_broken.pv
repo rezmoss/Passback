@@ -1,0 +1,44 @@
+(* Passback suite 1: sharing a vault key with X-Wing (ML-KEM-768 + X25519).
+
+   The vault key is sealed to the recipient under a key derived from BOTH KEM
+   shared secrets. The X25519 private key is given to the attacker (modelling a
+   future quantum computer breaking X25519). The vault key must stay secret
+   while ML-KEM-768 holds. The sanity model leaks both keys and must find an attack. *)
+
+free net: channel.
+type key.
+type skey.
+type pkey.
+
+fun pkM(skey): pkey.
+fun pkX(skey): pkey.
+fun encM(pkey, bitstring): bitstring.
+fun ssM(pkey, bitstring): key.
+reduc forall s: skey, r: bitstring; decM(s, encM(pkM(s), r)) = ssM(pkM(s), r).
+fun encX(pkey, bitstring): bitstring.
+fun ssX(pkey, bitstring): key.
+reduc forall s: skey, r: bitstring; decX(s, encX(pkX(s), r)) = ssX(pkX(s), r).
+
+fun combine(key, key, bitstring, pkey): key.      (* SHA3-256(ssM || ssX || ctX || pkX || label) *)
+fun wrapkey(key, bitstring): key.                 (* HKDF(ss, H(ct), purpose) *)
+fun k2b(key): bitstring [data].
+fun seal(key, bitstring, bitstring, bitstring): bitstring.
+reduc forall k: key, p: bitstring, ad: bitstring, m: bitstring;
+  open(k, p, ad, seal(k, p, ad, m)) = m.
+
+const VAULT_KEY_SHARE: bitstring.
+free vault, member: bitstring.
+free vaultKey: bitstring [private].
+
+query attacker(vaultKey).
+
+process
+  new sM: skey; new sX: skey;
+  out(net, (pkM(sM), pkX(sX)));
+  out(net, sX);
+  out(net, sM);
+  new rM: bitstring; new rX: bitstring;
+  let ctM = encM(pkM(sM), rM) in
+  let ctX = encX(pkX(sX), rX) in
+  let ss = combine(ssM(pkM(sM), rM), ssX(pkX(sX), rX), ctX, pkX(sX)) in
+  out(net, (ctM, ctX, seal(wrapkey(ss, (ctM, ctX)), VAULT_KEY_SHARE, (vault, member), vaultKey)))

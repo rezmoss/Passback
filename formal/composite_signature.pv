@@ -1,0 +1,49 @@
+(* Passback suite 1: composite Ed25519 + ML-DSA-65 signatures on vault commits.
+
+   A device accepts a commit only if both signatures verify. The Ed25519 private
+   key is given to the attacker, and the author also acts as a signing oracle for
+   attacker-chosen data under the "vault-file" context. A device must still only
+   accept commits the author really made. The sanity model leaks both keys and must
+   find a forgery. *)
+
+free net: channel.
+type skey.
+type pkey.
+
+fun pkE(skey): pkey.
+fun signE(skey, bitstring): bitstring.
+reduc forall s: skey, m: bitstring; verifyE(pkE(s), m, signE(s, m)) = true.
+fun pkD(skey): pkey.
+fun signD(skey, bitstring): bitstring.
+reduc forall s: skey, m: bitstring; verifyD(pkD(s), m, signD(s, m)) = true.
+
+const VAULT_COMMIT, VAULT_FILE: bitstring.
+
+event Committed(bitstring, bitstring, bitstring).
+event Accepted(bitstring, bitstring, bitstring).
+query v: bitstring, n: bitstring, r: bitstring;
+  event(Accepted(v, n, r)) ==> event(Committed(v, n, r)).
+
+let author(sE: skey, sD: skey) =
+  in(net, (v: bitstring, n: bitstring, r: bitstring));
+  event Committed(v, n, r);
+  let m = (VAULT_COMMIT, v, n, r) in
+  out(net, (m, signE(sE, m), signD(sD, m))).
+
+let fileOracle(sE: skey, sD: skey) =
+  in(net, d: bitstring);
+  let m = (VAULT_FILE, d) in
+  out(net, (signE(sE, m), signD(sD, m))).
+
+let device(pE: pkey, pD: pkey) =
+  in(net, (v: bitstring, n: bitstring, r: bitstring, gE: bitstring, gD: bitstring));
+  let m = (VAULT_COMMIT, v, n, r) in
+  if verifyE(pE, m, gE) = true then
+  if verifyD(pD, m, gD) = true then
+  event Accepted(v, n, r).
+
+process
+  new sE: skey; new sD: skey;
+  out(net, (pkE(sE), pkD(sD)));
+  out(net, sE);                                   (* Ed25519 is broken *)
+  ( !author(sE, sD) | !fileOracle(sE, sD) | !device(pkE(sE), pkD(sD)) )

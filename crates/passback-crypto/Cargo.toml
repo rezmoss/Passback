@@ -1,0 +1,28 @@
+[package]
+name = "passback-crypto"
+description = "Passback cryptographic core: KDF, unlock keys, AEAD, hybrid post-quantum KEM and signatures, key hierarchy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
+hkdf = "0.13"
+sha2 = "0.11"
+sha3 = "0.11"
+x25519-dalek = { version = "3", features = ["static_secrets", "zeroize"] }
+ed25519-dalek = { version = "3", features = ["zeroize"] }
+ml-kem = { version = "0.3", features = ["zeroize", "hazmat"] }
+ml-dsa = { version = "0.1", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "1.9", features = ["derive", "alloc"] }
+subtle = "2.6"
+getrandom = "0.4"
+unicode-normalization = "0.1"
+thiserror = "2"
+
+[dev-dependencies]
+hex = "0.4"
+proptest = "1"

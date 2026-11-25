@@ -1,0 +1,39 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issue?** Don't file it here; use [private reporting](https://github.com/rezmoss/Passback/security/advisories/new).
+        Never paste passwords, Secret Keys, vault files or other secrets into an issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. passback ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: version
+    attributes:
+      label: Version and platform
+      description: Paste the output of `passback version --json`, plus your OS.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or logs
+      description: Remove anything secret before pasting.
+      render: text

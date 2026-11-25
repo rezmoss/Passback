@@ -1,0 +1,17 @@
+[package]
+name = "passback-store"
+description = "Passback embedded storage (SQLite) for encrypted records, signed commits and checkpoints"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+passback-crypto = { path = "../passback-crypto" }
+passback-format = { path = "../passback-format" }
+rusqlite = { version = "0.43", features = ["bundled"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
