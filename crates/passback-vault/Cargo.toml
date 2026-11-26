@@ -1,0 +1,24 @@
+[package]
+name = "passback-vault"
+description = "Passback vault library: unlocked vault handle, device state and rollback checkpoints, items, search, generators, import/export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+passback-crypto = { path = "../passback-crypto" }
+passback-format = { path = "../passback-format" }
+passback-harden = { path = "../passback-harden" }
+hex = "0.4"
+hmac = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+subtle = "2.6"
+thiserror = "2"
+zeroize = { version = "1.9", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"

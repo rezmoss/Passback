@@ -8,7 +8,7 @@ use passback_crypto::{
     aead::{self, SealedBox},
     kdf::KdfParams,
     kem::{self, KemBox, KemPublicKey, KemSecretKey},
-    keys::{ItemKey, VaultKey, new_id},
+    keys::{AccountKey, ItemKey, VaultKey, new_id},
     secret_key::SecretKey,
     sign::{self, SigningKey, VerifyingKey},
     unlock::Factor,
@@ -52,11 +52,13 @@ pub enum Surface {
     /// Full `VaultFile::open`. Runs Argon2 (64 MiB) when the header has minimum
     /// parameters, so it is slow by design.
     VaultFile,
+    /// `DeviceState::parse` (device.json), then verify each account entry's MAC.
+    DeviceState,
 }
 
 impl Surface {
     /// All surfaces.
-    pub const ALL: [Surface; 11] = [
+    pub const ALL: [Surface; 12] = [
         Surface::SealedBox,
         Surface::SealedOpen,
         Surface::Record,
@@ -68,6 +70,7 @@ impl Surface {
         Surface::VerifyingKeyAndSignature,
         Surface::KemBox,
         Surface::VaultFile,
+        Surface::DeviceState,
     ];
 
     /// Selector byte to surface.
@@ -127,11 +130,19 @@ pub fn exercise(surface: Surface, data: &[u8]) {
                 let _ = kem::open_from(&sk, "fuzz", b"aad", &b);
             }
         }
+        Surface::DeviceState => {
+            if let Ok(d) = passback_vault::device::DeviceState::parse("fuzz.json".into(), data) {
+                // Exercise MAC verification under the fixed seed key. Whether it verifies
+                // depends on the mutation (e.g. whitespace changes keep it valid); it
+                // must only never panic.
+                let _ = d.account(&SEED_ACCOUNT, &seed_account_key());
+            }
+        }
         Surface::VaultFile => {
             if let Ok(h) = file::peek(data)
                 && h.unlock.kdf == KdfParams::MIN
             {
-                let _ = VaultFile::open(data, &[Factor::Password(FUZZ_PASSWORD)]);
+                let _ = VaultFile::open(data, &[Factor::Password(FUZZ_PASSWORD)], &Default::default());
             }
         }
     }
@@ -178,6 +189,7 @@ pub fn seeds() -> Vec<(Surface, Vec<u8>)> {
         ),
         (Surface::KemBox, kbox_enc.finish()),
         (Surface::VaultFile, vault_file),
+        (Surface::DeviceState, sample_device_state()),
     ]
 }
 
@@ -190,4 +202,38 @@ pub fn sample_vault_file() -> Vec<u8> {
     vf.put(&v, &new_id().expect("rng"), b"item one", dev, 1).expect("put");
     vf.put(&v, &new_id().expect("rng"), b"item two", dev, 2).expect("put");
     vf.to_bytes().expect("encode")
+}
+
+/// Account id used by the device-state seed.
+pub const SEED_ACCOUNT: [u8; 16] = [0x5a; 16];
+
+/// A fixed account key (the same in every process), so the device-state seed's MAC
+/// verifies wherever the corpus is replayed.
+pub fn seed_account_key() -> AccountKey {
+    let unlock = Key32::from_bytes([0x77; 32]);
+    let mut aad = Writer::new();
+    aad.bytes(&SEED_ACCOUNT);
+    let sealed = aead::seal(&unlock, "account-key", &aad.finish(), &[0x5a; 32]).expect("seal");
+    AccountKey::unwrap(&unlock, &SEED_ACCOUNT, &sealed).expect("fixed account key")
+}
+
+/// A valid device.json with one account entry, MACed with [`seed_account_key`].
+pub fn sample_device_state() -> Vec<u8> {
+    // A path that doesn't exist: loading it creates an empty state in memory only.
+    let mut d =
+        passback_vault::device::DeviceState::load("/nonexistent/passback-seed/device.json".into()).expect("load");
+    let state = passback_vault::device::AccountState {
+        secret_key: Some(SecretKey::from_bytes([3; 16])),
+        checkpoints: [(
+            SEED_ACCOUNT,
+            Checkpoint {
+                vault_id: SEED_ACCOUNT,
+                seq: 3,
+                head: [1; 32],
+            },
+        )]
+        .into(),
+    };
+    d.set_account(&SEED_ACCOUNT, &seed_account_key(), &state);
+    d.to_bytes().expect("serialize").to_vec()
 }

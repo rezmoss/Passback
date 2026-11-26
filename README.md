@@ -103,8 +103,8 @@ Add `--json` to any command for machine-readable output.
 | Crate | Purpose |
 |---|---|
 | `passback-crypto` | KDF, unlock keys, committing AEAD, X-Wing, composite signatures, key hierarchy, self-tests |
-| `passback-format` | Records, signed commits, Merkle state, rollback/fork checkpoints, `.pbv` container |
-| `passback-store` | SQLite storage for ciphertext, commits and checkpoints |
+| `passback-format` | The `.pbv` vault file: account header, records, signed commits, Merkle state, rollback/fork checkpoints |
+| `passback-vault` | The unlocked vault: one `.pbv` file, device state and rollback checkpoints |
 | `passback-harden` | Process hardening and locked secret memory |
 | `passback` | The binary |
 

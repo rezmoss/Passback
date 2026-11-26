@@ -20,23 +20,22 @@
 
 use std::collections::BTreeMap;
 
-use hmac::{Hmac, KeyInit, Mac};
 use passback_crypto::{
-    Key32, Suite,
     aead::SealedBox,
     hash,
     kdf::KdfParams,
-    keys::{AccountKey, Id, Identity, ItemKey, VaultKey, new_id},
+    keys::{AccountKey, Id, ItemKey, VaultKey, new_id},
     sign::VerifyingKey,
-    unlock::{Factor, UnlockParams, derive_unlock_key},
+    unlock::Factor,
     wire::{Reader, Writer},
 };
-use sha2::Sha256;
 use zeroize::Zeroizing;
 
+pub use crate::account::{Header, factor_mask};
 use crate::{
     FormatError, Result,
-    commit::{Commit, Signers, VaultState},
+    account::Account,
+    commit::{Checkpoint, Commit, Signers, VaultState},
     record::Record,
 };
 
@@ -45,94 +44,28 @@ pub const MAGIC: &[u8; 8] = b"PASSBACK";
 /// Container format version.
 pub const FORMAT_VERSION: u16 = 1;
 const MAX_HEADER: usize = 64 * 1024;
-const MAX_BODY: usize = 1 << 30;
+/// Largest vault body (1 GiB).
+pub const MAX_BODY: usize = 1 << 30;
 
-/// Bit flags naming the factors needed to unlock.
-pub mod factor_mask {
-    /// Master password (always set).
-    pub const PASSWORD: u8 = 1;
-    /// Account Secret Key.
-    pub const SECRET_KEY: u8 = 2;
-    /// Key file.
-    pub const KEY_FILE: u8 = 4;
-    /// Hardware authenticator.
-    pub const HARDWARE: u8 = 8;
-}
-
-fn mask_of(factors: &[Factor<'_>]) -> u8 {
-    factors.iter().fold(0, |m, f| {
-        m | match f {
-            Factor::Password(_) => factor_mask::PASSWORD,
-            Factor::SecretKey(_) => factor_mask::SECRET_KEY,
-            Factor::KeyFile(_) => factor_mask::KEY_FILE,
-            Factor::Hardware(_) => factor_mask::HARDWARE,
+/// Check every replayed vault state against the device's checkpoints.
+/// Returns the vaults that had no checkpoint (first use on this device).
+pub fn check_checkpoints<'a>(
+    states: impl Iterator<Item = &'a VaultState>,
+    known: &BTreeMap<Id, Checkpoint>,
+) -> Result<Vec<Id>> {
+    let mut seen = Vec::new();
+    let mut first_use = Vec::new();
+    for st in states {
+        seen.push(*st.vault_id());
+        match known.get(st.vault_id()) {
+            Some(cp) => cp.check(st)?,
+            None => first_use.push(*st.vault_id()),
         }
-    })
-}
-
-/// Public header: readable without unlocking, authenticated after unlocking.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Header {
-    /// Suite of the header's own envelopes.
-    pub suite: Suite,
-    /// KDF inputs.
-    pub unlock: UnlockParams,
-    /// Factors required (see [`factor_mask`]).
-    pub factors: u8,
-    wrapped_account_key: SealedBox,
-    sealed_identity: SealedBox,
-    kem_pk: Vec<u8>,
-    sig_pk: Vec<u8>,
-    /// Creation time, ms since the Unix epoch.
-    pub created_ms: u64,
-}
-
-impl Header {
-    fn encode(&self) -> Vec<u8> {
-        let mut w = Writer::new();
-        w.u8(self.suite.id())
-            .fixed(&self.unlock.account_id)
-            .fixed(&self.unlock.salt);
-        self.unlock.kdf.encode(&mut w);
-        w.u8(self.factors);
-        self.wrapped_account_key.encode(&mut w);
-        self.sealed_identity.encode(&mut w);
-        w.bytes(&self.kem_pk).bytes(&self.sig_pk).u64(self.created_ms);
-        w.finish()
     }
-
-    fn decode(b: &[u8]) -> Result<Self> {
-        let mut r = Reader::new(b);
-        let suite = Suite::from_id(r.u8()?)?;
-        let account_id = r.fixed()?;
-        let salt = r.fixed()?;
-        let kdf = KdfParams::decode(&mut r)?;
-        let factors = r.u8()?;
-        if factors & factor_mask::PASSWORD == 0 || factors > 0x0f {
-            return Err(passback_crypto::Error::Factors("bad factor mask").into());
-        }
-        let h = Self {
-            suite,
-            unlock: UnlockParams { account_id, salt, kdf },
-            factors,
-            wrapped_account_key: SealedBox::decode(&mut r, 256)?,
-            sealed_identity: SealedBox::decode(&mut r, 256)?,
-            kem_pk: r.bytes(4096)?.to_vec(),
-            sig_pk: r.bytes(4096)?.to_vec(),
-            created_ms: r.u64()?,
-        };
-        r.finish()?;
-        Ok(h)
+    if let Some(missing) = known.keys().find(|id| !seen.contains(id)) {
+        return Err(FormatError::VaultMissing(*missing));
     }
-}
-
-fn header_mac(ak: &AccountKey, header_bytes: &[u8]) -> [u8; 32] {
-    let k = hash::hkdf_key(ak.key().expose(), b"", b"passback/v1/header-mac");
-    let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(k.expose()).expect("any key length");
-    m.update(MAGIC);
-    m.update(&FORMAT_VERSION.to_be_bytes());
-    m.update(header_bytes);
-    m.finalize().into_bytes().into()
+    Ok(first_use)
 }
 
 /// One vault inside the file.
@@ -162,10 +95,50 @@ impl Vault {
 
 /// An unlocked, fully verified vault file.
 pub struct VaultFile {
-    header: Header,
-    ak: AccountKey,
-    identity: Identity,
+    account: Account,
     vaults: Vec<Vault>,
+}
+
+/// Result of opening a file.
+pub struct Opened {
+    /// The verified file.
+    pub file: VaultFile,
+    /// Vaults this device had no checkpoint for (first use). Callers must record a
+    /// checkpoint for them and should tell the user.
+    pub first_use: Vec<Id>,
+}
+
+/// A file whose account is unlocked and whose header and signature verified, but
+/// whose body hasn't been decoded or checked yet. Only [`Unlocked::verify`] gives
+/// access to vault contents.
+pub struct Unlocked<'a> {
+    account: Account,
+    body: &'a [u8],
+}
+
+impl Unlocked<'_> {
+    /// The unlocked account (to load device state MACed with its key).
+    pub fn account(&self) -> &Account {
+        &self.account
+    }
+
+    /// Decode the body, replay every vault's commit chain, and check it against `known`
+    /// (see [`VaultFile::open`]).
+    pub fn verify(self, known: &BTreeMap<Id, Checkpoint>) -> Result<Opened> {
+        let vaults = VaultFile::decode_body(
+            self.body,
+            self.account.account_key(),
+            self.account.identity().sign.public(),
+        )?;
+        let first_use = check_checkpoints(vaults.iter().map(|v| &v.state), known)?;
+        Ok(Opened {
+            file: VaultFile {
+                account: self.account,
+                vaults,
+            },
+            first_use,
+        })
+    }
 }
 
 /// Read the public header without unlocking (to know which factors to ask for).
@@ -181,30 +154,27 @@ impl VaultFile {
     /// Create a new, empty vault file protected by `factors`.
     /// Must include a password; production callers should include a Secret Key.
     pub fn create(factors: &[Factor<'_>], kdf: KdfParams, now_ms: u64) -> Result<Self> {
-        let unlock = UnlockParams::generate(kdf)?;
-        let uk = derive_unlock_key(&unlock, factors)?;
-        let ak = AccountKey::generate()?;
-        let identity = Identity::generate()?;
-        let header = Header {
-            suite: Suite::CURRENT,
-            factors: mask_of(factors),
-            wrapped_account_key: ak.wrap(&uk, &unlock.account_id)?,
-            sealed_identity: ak.seal_identity(&unlock.account_id, &identity)?,
-            kem_pk: identity.kem.public().as_bytes().to_vec(),
-            sig_pk: identity.sign.public().as_bytes().to_vec(),
-            unlock,
-            created_ms: now_ms,
-        };
         Ok(Self {
-            header,
-            ak,
-            identity,
+            account: Account::create(factors, kdf, now_ms)?,
             vaults: Vec::new(),
         })
     }
 
     /// Parse, unlock and verify a vault file.
-    pub fn open(bytes: &[u8], factors: &[Factor<'_>]) -> Result<Self> {
+    ///
+    /// `known` holds this device's checkpoints. A vault with a checkpoint must not be
+    /// older than it or on another history; a known vault that is missing from the
+    /// file is an error too. Vaults without one are reported in [`Opened::first_use`].
+    /// Pass an empty map only when this device has never seen any of the file's vaults.
+    pub fn open(bytes: &[u8], factors: &[Factor<'_>], known: &BTreeMap<Id, Checkpoint>) -> Result<Opened> {
+        Self::unlock(bytes, factors)?.verify(known)
+    }
+
+    /// First half of [`VaultFile::open`]: unlock the account and verify the header MAC
+    /// and the whole-file signature. Nothing in the body is used yet. Callers that need
+    /// the account key to load their checkpoints (device state is MACed with it) use
+    /// this, then [`Unlocked::verify`].
+    pub fn unlock<'a>(bytes: &'a [u8], factors: &[Factor<'_>]) -> Result<Unlocked<'a>> {
         let mut r = Reader::new(bytes);
         if r.raw(8).ok() != Some(&MAGIC[..]) || r.u16().ok() != Some(FORMAT_VERSION) {
             return Err(FormatError::NotAVault);
@@ -216,34 +186,15 @@ impl VaultFile {
         let file_sig = r.bytes(passback_crypto::sign::SIGNATURE_LEN)?;
         r.finish()?;
 
-        let header = Header::decode(header_bytes)?;
-        if mask_of(factors) != header.factors {
-            return Err(passback_crypto::Error::Factors("factor set does not match this vault").into());
-        }
-        let uk = derive_unlock_key(&header.unlock, factors)?;
-        let ak = AccountKey::unwrap(&uk, &header.unlock.account_id, &header.wrapped_account_key)?;
-        let want = header_mac(&ak, header_bytes);
-        if !bool::from(subtle::ConstantTimeEq::ct_eq(&want[..], &mac[..])) {
-            return Err(FormatError::HeaderTampered);
-        }
-        let identity = ak.open_identity(&header.unlock.account_id, &header.sealed_identity)?;
-        if identity.kem.public().as_bytes() != header.kem_pk || identity.sign.public().as_bytes() != header.sig_pk {
-            return Err(FormatError::HeaderTampered);
-        }
+        let account = Account::unlock(header_bytes, &mac, factors)?;
         let digest = hash::sha256(&bytes[..signed_len]);
-        identity
+        account
+            .identity()
             .sign
             .public()
             .verify("vault-file", &digest, file_sig)
             .map_err(|_| FormatError::FileSignature)?;
-
-        let vaults = Self::decode_body(body, &ak, identity.sign.public())?;
-        Ok(Self {
-            header,
-            ak,
-            identity,
-            vaults,
-        })
+        Ok(Unlocked { account, body })
     }
 
     fn decode_body(body: &[u8], ak: &AccountKey, signer: &VerifyingKey) -> Result<Vec<Vault>> {
@@ -305,7 +256,7 @@ impl VaultFile {
 
     /// Serialize, MAC and sign.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let header_bytes = self.header.encode();
+        let header_bytes = self.account.header_bytes();
         let mut body = Writer::new();
         body.u32(self.vaults.len() as u32);
         for v in &self.vaults {
@@ -322,11 +273,15 @@ impl VaultFile {
         for c in all_commits {
             c.encode(&mut body);
         }
+        let body = body.finish();
+        if body.len() > MAX_BODY {
+            return Err(FormatError::Limit("vault body too large"));
+        }
         let mut w = Writer::new();
         w.fixed(MAGIC).u16(FORMAT_VERSION).bytes(&header_bytes);
-        w.fixed(&header_mac(&self.ak, &header_bytes)).bytes(&body.finish());
+        w.fixed(&self.account.header_mac()).bytes(&body);
         let mut out = w.finish();
-        let sig = self.identity.sign.sign("vault-file", &hash::sha256(&out))?;
+        let sig = self.account.identity().sign.sign("vault-file", &hash::sha256(&out))?;
         let mut tail = Writer::new();
         tail.bytes(&sig);
         out.extend_from_slice(&tail.finish());
@@ -335,12 +290,17 @@ impl VaultFile {
 
     /// Header.
     pub fn header(&self) -> &Header {
-        &self.header
+        self.account.header()
     }
 
-    /// Account key (for authenticating local checkpoints).
-    pub fn account_key(&self) -> &Key32 {
-        self.ak.key()
+    /// The unlocked account.
+    pub fn account(&self) -> &Account {
+        &self.account
+    }
+
+    /// Checkpoints of every vault in the file, to record on this device.
+    pub fn checkpoints(&self) -> BTreeMap<Id, Checkpoint> {
+        self.vaults.iter().map(|v| (v.id, v.state.checkpoint())).collect()
     }
 
     /// Vaults.
@@ -359,7 +319,7 @@ impl VaultFile {
     pub fn add_vault(&mut self) -> Result<Id> {
         let id = new_id()?;
         let key = VaultKey::generate()?;
-        let wrapped_key = key.wrap(&self.ak, &id)?;
+        let wrapped_key = key.wrap(self.account.account_key(), &id)?;
         self.vaults.push(Vault {
             id,
             key,
@@ -372,9 +332,8 @@ impl VaultFile {
     }
 
     fn commit_records(&mut self, vault: &Id, recs: Vec<Record>, device: Id, now_ms: u64) -> Result<()> {
-        let mut signers = Signers::new();
-        signers.allow(self.identity.sign.public().clone());
-        let sign_key = &self.identity.sign;
+        let signers = self.account.signers();
+        let sign_key = &self.account.identity().sign;
         let v = self
             .vaults
             .iter_mut()
@@ -434,6 +393,10 @@ mod tests {
     use super::*;
     use passback_crypto::secret_key::SecretKey;
 
+    fn open(bytes: &[u8], f: &[Factor<'_>]) -> Result<VaultFile> {
+        VaultFile::open(bytes, f, &BTreeMap::new()).map(|o| o.file)
+    }
+
     fn kdf() -> KdfParams {
         KdfParams::MIN
     }
@@ -456,19 +419,16 @@ mod tests {
             peek(&bytes).unwrap().factors,
             factor_mask::PASSWORD | factor_mask::SECRET_KEY
         );
-        let re = VaultFile::open(&bytes, &f).unwrap();
+        let re = open(&bytes, &f).unwrap();
         assert_eq!(&*re.get(&v, &a).unwrap().unwrap(), b"alpha2");
         assert!(re.get(&v, &b).unwrap().is_none());
         assert_eq!(re.vaults()[0].state(), vf.vaults()[0].state());
         assert_eq!(re.to_bytes().unwrap().len(), bytes.len());
 
-        assert!(
-            VaultFile::open(&bytes, &[Factor::Password("pw")]).is_err(),
-            "missing secret key"
-        );
+        assert!(open(&bytes, &[Factor::Password("pw")]).is_err(), "missing secret key");
         let wrong = SecretKey::generate().unwrap();
-        assert!(VaultFile::open(&bytes, &[Factor::Password("pw"), Factor::SecretKey(&wrong)]).is_err());
-        assert!(VaultFile::open(&bytes, &[Factor::Password("px"), Factor::SecretKey(&sk)]).is_err());
+        assert!(open(&bytes, &[Factor::Password("pw"), Factor::SecretKey(&wrong)]).is_err());
+        assert!(open(&bytes, &[Factor::Password("px"), Factor::SecretKey(&sk)]).is_err());
     }
 
     fn small_file() -> (VaultFile, Id) {
@@ -485,7 +445,7 @@ mod tests {
         // Duplicate vault id.
         let (mut vf, v) = small_file();
         let wrapped = vf.vaults[0].wrapped_key.clone();
-        let key = VaultKey::unwrap(&vf.ak, &v, &wrapped).unwrap();
+        let key = VaultKey::unwrap(vf.account.account_key(), &v, &wrapped).unwrap();
         vf.vaults.push(Vault {
             id: v,
             key,
@@ -495,7 +455,7 @@ mod tests {
             commits: vec![],
         });
         assert_eq!(
-            VaultFile::open(&vf.to_bytes().unwrap(), &f).err(),
+            open(&vf.to_bytes().unwrap(), &f).err(),
             Some(passback_crypto::Error::Malformed("duplicate vault").into())
         );
 
@@ -512,7 +472,7 @@ mod tests {
         .unwrap();
         vf.vaults[0].records.push(extra);
         assert_eq!(
-            VaultFile::open(&vf.to_bytes().unwrap(), &f).err(),
+            open(&vf.to_bytes().unwrap(), &f).err(),
             Some(FormatError::RecordMismatch)
         );
 
@@ -520,7 +480,7 @@ mod tests {
         let (mut vf, _) = small_file();
         vf.vaults[0].records.clear();
         assert_eq!(
-            VaultFile::open(&vf.to_bytes().unwrap(), &f).err(),
+            open(&vf.to_bytes().unwrap(), &f).err(),
             Some(FormatError::RecordMismatch)
         );
 
@@ -530,13 +490,50 @@ mod tests {
         let gk = VaultKey::generate().unwrap();
         let grec = Record::seal(&gk, ghost, new_id().unwrap(), 1, &ItemKey::generate().unwrap(), b"z").unwrap();
         let gc = VaultState::new(ghost)
-            .prepare(&[&grec], new_id().unwrap(), &vf.identity.sign, 3)
+            .prepare(&[&grec], new_id().unwrap(), &vf.account.identity().sign, 3)
             .unwrap();
         vf.vaults[0].records.push(grec);
         vf.vaults[0].commits.push(gc);
         assert_eq!(
-            VaultFile::open(&vf.to_bytes().unwrap(), &f).err(),
+            open(&vf.to_bytes().unwrap(), &f).err(),
             Some(FormatError::RecordMismatch)
+        );
+    }
+
+    #[test]
+    fn device_checkpoints_are_enforced_on_open() {
+        let f = [Factor::Password("pw")];
+        let (mut vf, v) = small_file();
+        let old_bytes = vf.to_bytes().unwrap();
+        let old_cp = vf.checkpoints();
+        vf.put(&v, &new_id().unwrap(), b"newer", new_id().unwrap(), 3).unwrap();
+        let new_bytes = vf.to_bytes().unwrap();
+        let new_cp = vf.checkpoints();
+
+        // Fresh device: every vault is first use.
+        let o = VaultFile::open(&new_bytes, &f, &BTreeMap::new()).unwrap();
+        assert_eq!(o.first_use, vec![v]);
+        // Device saw the old state: newer file is fine, nothing is first use.
+        assert!(VaultFile::open(&new_bytes, &f, &old_cp).unwrap().first_use.is_empty());
+        // Device saw the new state: the old file is a rollback.
+        assert!(matches!(
+            VaultFile::open(&old_bytes, &f, &new_cp).err(),
+            Some(FormatError::Rollback { seen: 2, got: 1 })
+        ));
+        // Device knows a vault the file doesn't contain.
+        let mut known = new_cp.clone();
+        let ghost = new_id().unwrap();
+        known.insert(
+            ghost,
+            Checkpoint {
+                vault_id: ghost,
+                seq: 1,
+                head: [9; 32],
+            },
+        );
+        assert_eq!(
+            VaultFile::open(&new_bytes, &f, &known).err(),
+            Some(FormatError::VaultMissing(ghost))
         );
     }
 
@@ -568,12 +565,12 @@ mod tests {
         for i in (0..bytes.len()).step_by(step) {
             let mut t = bytes.clone();
             t[i] ^= 0x01;
-            assert!(VaultFile::open(&t, &f).is_err(), "flip at {i} accepted");
+            assert!(open(&t, &f).is_err(), "flip at {i} accepted");
         }
         // Truncation and trailing garbage.
-        assert!(VaultFile::open(&bytes[..bytes.len() - 1], &f).is_err());
+        assert!(open(&bytes[..bytes.len() - 1], &f).is_err());
         let mut longer = bytes.clone();
         longer.push(0);
-        assert!(VaultFile::open(&longer, &f).is_err());
+        assert!(open(&longer, &f).is_err());
     }
 }
