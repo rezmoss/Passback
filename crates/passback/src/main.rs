@@ -89,8 +89,13 @@ fn suite() -> Suite {
 fn main() -> ExitCode {
     let hardening = passback_harden::harden_process();
     let cli = Cli::parse();
+    run(cli, hardening, passback_crypto::selftest::run)
+}
 
-    if let Err(e) = passback_crypto::selftest::run() {
+/// Everything after argument parsing. `selftest` is a parameter only so unit tests
+/// can exercise the failure path; `main` always passes the real self-test.
+fn run(cli: Cli, hardening: passback_harden::Report, selftest: fn() -> passback_crypto::Result<()>) -> ExitCode {
+    if let Err(e) = selftest() {
         eprintln!("passback: {e}. This binary is not safe to use.");
         return ExitCode::from(70);
     }
@@ -175,4 +180,18 @@ fn main() -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_self_test_exits_70_before_running_any_command() {
+        let cli = Cli::parse_from(["passback", "version"]);
+        let code = run(cli, passback_harden::Report::default(), || {
+            Err(passback_crypto::Error::SelfTest("forced"))
+        });
+        assert_eq!(code, ExitCode::from(70));
+    }
 }

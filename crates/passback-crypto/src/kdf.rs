@@ -100,6 +100,14 @@ pub(crate) fn raw_argon2id(pw: &[u8], salt: &[u8], params: &KdfParams) -> Result
 /// Pick the largest iteration count that stays under `target` on this machine,
 /// keeping memory at `m_kib`. Never returns less than [`KdfParams::MIN`].
 pub fn calibrate(m_kib: u32, p: u32, target: std::time::Duration) -> Result<KdfParams> {
+    // Validate memory and lanes before running Argon2, so an absurd request is
+    // rejected without allocating it.
+    KdfParams {
+        m_kib,
+        t: KdfParams::MIN.t,
+        p,
+    }
+    .validate()?;
     let base = KdfParams { m_kib, t: 1, p };
     let start = std::time::Instant::now();
     raw_argon2id(b"calibration", &[0u8; 32], &base)?;
@@ -112,4 +120,57 @@ pub fn calibrate(m_kib: u32, p: u32, target: std::time::Duration) -> Result<KdfP
     };
     params.validate()?;
     Ok(params)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limits_accept_bounds_and_reject_one_past() {
+        let (min, max) = (KdfParams::MIN, KdfParams::MAX);
+        for ok in [min, max] {
+            ok.validate().unwrap();
+        }
+        let bad = [
+            KdfParams {
+                m_kib: min.m_kib - 1,
+                ..min
+            },
+            KdfParams { t: min.t - 1, ..min },
+            KdfParams { p: min.p - 1, ..min },
+            KdfParams {
+                m_kib: max.m_kib + 1,
+                ..max
+            },
+            KdfParams { t: max.t + 1, ..max },
+            KdfParams { p: max.p + 1, ..max },
+        ];
+        for p in bad {
+            assert!(p.validate().is_err(), "{p:?} accepted");
+        }
+    }
+
+    #[test]
+    fn decode_rejects_out_of_range_params() {
+        // A crafted header must not make Argon2 allocate 16 TiB.
+        let mut w = crate::wire::Writer::new();
+        KdfParams {
+            m_kib: u32::MAX,
+            t: 3,
+            p: 4,
+        }
+        .encode(&mut w);
+        let enc = w.finish();
+        assert!(KdfParams::decode(&mut crate::wire::Reader::new(&enc)).is_err());
+    }
+
+    #[test]
+    fn calibrate_rejects_oversized_memory_before_running_argon2() {
+        // 4 TiB: if Argon2 ran before validation, this test would abort on allocation.
+        assert_eq!(
+            calibrate(u32::MAX, 4, std::time::Duration::from_secs(1)),
+            Err(Error::WeakKdf("above maximum"))
+        );
+    }
 }

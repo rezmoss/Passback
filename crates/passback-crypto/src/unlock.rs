@@ -144,6 +144,24 @@ mod tests {
     }
 
     #[test]
+    fn key_file_and_hardware_factors_are_bound() {
+        let p = params();
+        let base = derive_unlock_key(&p, &[Factor::Password("pw")]).unwrap();
+        let kf = derive_unlock_key(&p, &[Factor::Password("pw"), Factor::KeyFile(b"file-a")]).unwrap();
+        let kf2 = derive_unlock_key(&p, &[Factor::Password("pw"), Factor::KeyFile(b"file-b")]).unwrap();
+        let hw = derive_unlock_key(&p, &[Factor::Password("pw"), Factor::Hardware(&[1; 32])]).unwrap();
+        let hw2 = derive_unlock_key(&p, &[Factor::Password("pw"), Factor::Hardware(&[2; 32])]).unwrap();
+        // Same 32 bytes as a key file vs as a hardware response must not collide.
+        let same_bytes_kf = derive_unlock_key(&p, &[Factor::Password("pw"), Factor::KeyFile(&[1; 32])]).unwrap();
+        let keys = [&base, &kf, &kf2, &hw, &hw2, &same_bytes_kf];
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                assert_ne!(a.expose(), b.expose());
+            }
+        }
+    }
+
+    #[test]
     fn nfkc_normalization() {
         let p = params();
         // "é" precomposed vs "e" + combining acute.

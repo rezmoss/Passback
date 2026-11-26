@@ -425,6 +425,15 @@ dependencies = [
  "libfuzzer-sys",
  "passback-crypto",
  "passback-format",
+ "passback-testkit",
+]
+
+[[package]]
+name = "passback-testkit"
+version = "0.1.0"
+dependencies = [
+ "passback-crypto",
+ "passback-format",
 ]
 
 [[package]]

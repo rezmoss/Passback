@@ -316,6 +316,37 @@ mod tests {
     }
 
     #[test]
+    fn failed_append_leaves_no_records_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v.db");
+        let ak = AccountKey::generate().unwrap();
+        let vk = VaultKey::generate().unwrap();
+        let key = SigningKey::generate().unwrap();
+        let mut signers = Signers::new();
+        signers.allow(key.public().clone());
+        let (vault, dev) = (new_id().unwrap(), new_id().unwrap());
+        let (a, b) = (new_id().unwrap(), new_id().unwrap());
+        {
+            let mut s = Store::open(&path).unwrap();
+            s.add_vault(&vault, &vk.wrap(&ak, &vault).unwrap()).unwrap();
+            let mut st = VaultState::new(vault);
+            let ra = Record::seal(&vk, vault, a, 1, &ItemKey::generate().unwrap(), b"a").unwrap();
+            let c1 = st.prepare(&[&ra], dev, &key, 1).unwrap();
+            st.apply(&c1, &signers, &[&ra]).unwrap();
+            s.append(&c1, &[&ra]).unwrap();
+
+            // Second append: its record insert succeeds, then the commit insert fails
+            // (seq 1 already exists). The record must not survive.
+            let rb = Record::seal(&vk, vault, b, 1, &ItemKey::generate().unwrap(), b"b").unwrap();
+            assert!(s.append(&c1, &[&rb]).is_err());
+        }
+        let s = Store::open(&path).unwrap();
+        assert!(s.record(&vault, &b, 1).unwrap().is_none(), "partial write survived");
+        assert!(s.record(&vault, &a, 1).unwrap().is_some());
+        assert_eq!(s.commits(&vault).unwrap().len(), 1);
+    }
+
+    #[test]
     fn rejects_newer_schema() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("v.db");

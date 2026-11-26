@@ -15,5 +15,3 @@ subtle = "2.6"
 zeroize = "1.9"
 thiserror = "2"
 
-[dev-dependencies]
-proptest = "1"

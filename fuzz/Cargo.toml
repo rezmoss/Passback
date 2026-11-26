@@ -12,6 +12,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 passback-crypto = { path = "../crates/passback-crypto" }
 passback-format = { path = "../crates/passback-format" }
+passback-testkit = { path = "../crates/passback-testkit" }
 
 # Separate workspace so the fuzz crate (nightly-only tooling) stays out of normal builds.
 [workspace]

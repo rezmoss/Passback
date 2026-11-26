@@ -1,0 +1,4 @@
+# Keep LF everywhere so scripts and test vectors behave the same on Windows checkouts.
+* text=auto eol=lf
+*.pbv binary
+*.db binary

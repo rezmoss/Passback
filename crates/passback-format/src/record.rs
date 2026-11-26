@@ -115,3 +115,42 @@ impl Record {
         hash::sha256_labeled("passback/v1/record", &[&self.to_bytes()])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use passback_crypto::keys::new_id;
+
+    #[test]
+    fn version_zero_is_refused() {
+        let vk = VaultKey::generate().unwrap();
+        let ik = ItemKey::generate().unwrap();
+        let err = Record::seal(&vk, new_id().unwrap(), new_id().unwrap(), 0, &ik, b"x").unwrap_err();
+        assert_eq!(err, FormatError::VersionRegression);
+    }
+
+    #[test]
+    fn decode_rejects_unknown_record_version_and_bad_tombstone_flag() {
+        let vk = VaultKey::generate().unwrap();
+        let r = Record::seal(
+            &vk,
+            new_id().unwrap(),
+            new_id().unwrap(),
+            1,
+            &ItemKey::generate().unwrap(),
+            b"x",
+        )
+        .unwrap();
+        let enc = r.to_bytes();
+        assert_eq!(Record::decode(&mut Reader::new(&enc)).unwrap(), r);
+
+        let mut bad_version = enc.clone();
+        bad_version[0] = 2;
+        assert!(Record::decode(&mut Reader::new(&bad_version)).is_err());
+
+        // Offset of the tombstone flag: version(1) + vault_id(16) + item_id(16) + version(8).
+        let mut bad_flag = enc.clone();
+        bad_flag[41] = 2;
+        assert!(Record::decode(&mut Reader::new(&bad_flag)).is_err());
+    }
+}

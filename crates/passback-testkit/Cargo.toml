@@ -1,0 +1,15 @@
+[package]
+name = "passback-testkit"
+description = "Test support for Passback: shared untrusted-input dispatch and valid seed encodings for fuzzing and robustness tests. Never shipped."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+passback-crypto = { path = "../passback-crypto" }
+passback-format = { path = "../passback-format" }
+
+[dev-dependencies]
+proptest = "1"

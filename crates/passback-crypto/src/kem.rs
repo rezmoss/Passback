@@ -237,6 +237,16 @@ mod tests {
     }
 
     #[test]
+    fn wrong_lengths_are_rejected() {
+        let sk = KemSecretKey::generate().unwrap();
+        let pk = sk.public().as_bytes();
+        assert!(KemPublicKey::from_bytes(&pk[..pk.len() - 1]).is_err());
+        assert!(KemPublicKey::from_bytes(&[pk, &[0]].concat()).is_err());
+        let (ct, _) = sk.public().encapsulate().unwrap();
+        assert!(sk.decapsulate(&ct[..ct.len() - 1]).is_err());
+    }
+
+    #[test]
     fn seal_to_roundtrip_and_recipient_binding() {
         let alice = KemSecretKey::generate().unwrap();
         let mallory = KemSecretKey::generate().unwrap();

@@ -222,6 +222,11 @@ mod imp {
             })
         }
 
+        #[cfg(test)]
+        pub fn bounds(&self) -> (*mut u8, usize) {
+            (self.data, self.cap)
+        }
+
         pub fn slice(&self) -> &[u8] {
             // SAFETY: `data..data+cap` is mapped RW for the life of `self`.
             unsafe { core::slice::from_raw_parts(self.data, self.cap) }
@@ -272,6 +277,7 @@ mod imp {
     fn page() -> usize {
         // SAFETY: GetSystemInfo fills the struct we pass.
         let mut si: SYSTEM_INFO = unsafe { core::mem::zeroed() };
+        // SAFETY: `si` is a valid, writable SYSTEM_INFO.
         unsafe { GetSystemInfo(&mut si) };
         si.dwPageSize as usize
     }
@@ -316,6 +322,10 @@ mod imp {
                 locked,
             })
         }
+        #[cfg(test)]
+        pub fn bounds(&self) -> (*mut u8, usize) {
+            (self.data, self.cap)
+        }
         pub fn slice(&self) -> &[u8] {
             // SAFETY: inner pages are RW for the life of `self`.
             unsafe { core::slice::from_raw_parts(self.data, self.cap) }
@@ -355,10 +365,138 @@ mod tests {
         assert_eq!(big.len(), 10_000);
         assert!(big.as_ref().iter().all(|&x| x == 0));
     }
+}
+
+/// Behaviour checks. Each runs in a child process (this test binary re-executed),
+/// because they change process state or are expected to crash.
+#[cfg(test)]
+mod behaviour {
+    use super::*;
+    use std::process::{Command, ExitStatus, Stdio};
+
+    const MODE: &str = "PASSBACK_HARDEN_CHILD";
+
+    fn run_child(mode: &str) -> ExitStatus {
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "behaviour::child_entry", "--ignored", "--test-threads=1"])
+            .env(MODE, mode)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+    }
+
+    /// Entry point for the child. Does nothing unless started by `run_child`.
+    #[test]
+    #[ignore]
+    fn child_entry() {
+        let Ok(mode) = std::env::var(MODE) else { return };
+        let code = match mode.as_str() {
+            "guard-before" | "guard-after" => {
+                let b = SecureBuf::new(16).unwrap();
+                let (data, cap) = b.inner.bounds();
+                let target = if mode == "guard-before" {
+                    data.wrapping_sub(1)
+                } else {
+                    data.wrapping_add(cap)
+                };
+                // SAFETY: deliberately invalid: `target` is inside a PROT_NONE guard page and
+                // this read must fault. Reaching the next line means the guard page is missing.
+                let _ = unsafe { core::ptr::read_volatile(target) };
+                10
+            }
+            "harden" => harden_effect(),
+            _ => 11,
+        };
+        std::process::exit(code);
+    }
+
+    /// Exit codes: 0 = measure was off before and on after; 3x = precondition could
+    /// not be established (the check would be vacuous); 2x = measure not in effect.
+    #[cfg(unix)]
+    fn harden_effect() -> i32 {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes into a valid rlimit.
+        if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut lim) } != 0 || lim.rlim_max == 0 {
+            return 30; // hard limit already 0: can't show that hardening changes anything
+        }
+        lim.rlim_cur = lim.rlim_max.min(1 << 20);
+        // SAFETY: setrlimit with a valid rlimit, soft limit within the hard limit.
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &lim) } != 0 {
+            return 31;
+        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        // SAFETY: prctl query with integer arguments.
+        if unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) } != 1 {
+            return 32;
+        }
+
+        harden_process();
+
+        // SAFETY: getrlimit writes into a valid rlimit.
+        if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut lim) } != 0 || lim.rlim_cur != 0 || lim.rlim_max != 0 {
+            return 20;
+        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        // SAFETY: prctl query with integer arguments.
+        if unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+            return 21;
+        }
+        0
+    }
+
+    #[cfg(windows)]
+    fn harden_effect() -> i32 {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            GetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode,
+        };
+        let flags = SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX;
+        // SAFETY: SetErrorMode/GetErrorMode take flags only. Clear any inherited mode first.
+        unsafe { SetErrorMode(0) };
+        // SAFETY: as above.
+        if unsafe { GetErrorMode() } & flags != 0 {
+            return 30;
+        }
+
+        harden_process();
+
+        // SAFETY: as above.
+        if unsafe { GetErrorMode() } & flags != flags {
+            return 22;
+        }
+        0
+    }
+
+    fn died_from_memory_fault(st: ExitStatus) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            matches!(st.signal(), Some(libc::SIGSEGV) | Some(libc::SIGBUS))
+        }
+        #[cfg(windows)]
+        {
+            st.code() == Some(0xC000_0005_u32 as i32) // STATUS_ACCESS_VIOLATION
+        }
+    }
 
     #[test]
-    fn harden_reports() {
-        let r = harden_process();
-        assert!(!r.applied.is_empty());
+    fn reading_the_page_before_a_secure_buf_faults() {
+        let st = run_child("guard-before");
+        assert!(died_from_memory_fault(st), "no fault before the buffer: {st:?}");
+    }
+
+    #[test]
+    fn reading_the_page_after_a_secure_buf_faults() {
+        let st = run_child("guard-after");
+        assert!(died_from_memory_fault(st), "no fault after the buffer: {st:?}");
+    }
+
+    #[test]
+    fn hardening_takes_effect() {
+        let st = run_child("harden");
+        assert_eq!(st.code(), Some(0), "hardening not in effect: {st:?}");
     }
 }

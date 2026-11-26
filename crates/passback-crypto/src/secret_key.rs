@@ -142,4 +142,27 @@ mod tests {
         assert!(SecretKey::parse(core::str::from_utf8(&b).unwrap()).is_err());
         assert!(SecretKey::parse("PB2-0000").is_err());
     }
+
+    #[test]
+    fn malformed_text_is_rejected_for_the_right_reason() {
+        let good = SecretKey::from_bytes([7; 16]).to_display().to_string();
+        let with_body_char = |c: char| {
+            let mut b = good.clone().into_bytes();
+            b[4] = c as u8; // first body digit, after "PB1-"
+            String::from_utf8(b).unwrap()
+        };
+        let cases = [
+            (good[..good.len() - 1].to_string(), "wrong length"),
+            (format!("{good}0"), "wrong length"),
+            (with_body_char('U'), "invalid character"),
+            (with_body_char('8'), "out of range"),
+        ];
+        for (input, reason) in cases {
+            assert_eq!(
+                SecretKey::parse(&input).unwrap_err(),
+                Error::SecretKeyFormat(reason),
+                "{input}"
+            );
+        }
+    }
 }

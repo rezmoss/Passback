@@ -229,4 +229,27 @@ mod tests {
         let again = SigningKey::from_seed(Key32::from_bytes(*k.seed().expose()));
         assert_eq!(again.public(), k.public());
     }
+
+    #[test]
+    fn malformed_keys_and_signatures_are_rejected() {
+        let k = SigningKey::generate().unwrap();
+        let sig = k.sign("commit", b"m").unwrap();
+        assert!(k.public().verify("commit", b"m", &sig[..sig.len() - 1]).is_err());
+        assert!(
+            k.public()
+                .verify("commit", b"m", &[sig.as_slice(), &[0]].concat())
+                .is_err()
+        );
+
+        let pk = k.public().as_bytes();
+        assert!(VerifyingKey::from_bytes(&pk[..pk.len() - 1]).is_err());
+        // Small-order Ed25519 point (the identity): accepting it would let anyone forge.
+        let mut weak = pk.to_vec();
+        weak[..32].copy_from_slice(&{
+            let mut id = [0u8; 32];
+            id[0] = 1;
+            id
+        });
+        assert!(VerifyingKey::from_bytes(&weak).is_err());
+    }
 }

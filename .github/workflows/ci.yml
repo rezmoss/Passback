@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow runs the full suite on the tagged commit before publishing.
+  workflow_call:
 
 permissions:
   contents: read
@@ -80,7 +82,7 @@ jobs:
           toolchain: nightly
       - run: cargo install cargo-fuzz --locked
       - name: Seed corpus
-        run: cargo test -p passback-format --test robustness -- --ignored write_fuzz_seed
+        run: cargo test -p passback-testkit --test robustness -- --ignored write_fuzz_seed
       - name: Fuzz each target (2 minutes each)
         working-directory: fuzz
         run: |

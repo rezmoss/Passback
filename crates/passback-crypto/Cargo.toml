@@ -25,4 +25,5 @@ thiserror = "2"
 
 [dev-dependencies]
 hex = "0.4"
+ml-dsa = { version = "0.1", default-features = false, features = ["alloc"] }
 proptest = "1"

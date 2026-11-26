@@ -471,6 +471,90 @@ mod tests {
         assert!(VaultFile::open(&bytes, &[Factor::Password("px"), Factor::SecretKey(&sk)]).is_err());
     }
 
+    fn small_file() -> (VaultFile, Id) {
+        let mut vf = VaultFile::create(&[Factor::Password("pw")], kdf(), 1).unwrap();
+        let v = vf.add_vault().unwrap();
+        vf.put(&v, &new_id().unwrap(), b"x", new_id().unwrap(), 2).unwrap();
+        (vf, v)
+    }
+
+    #[test]
+    fn validly_signed_files_with_inconsistent_bodies_are_rejected() {
+        let f = [Factor::Password("pw")];
+
+        // Duplicate vault id.
+        let (mut vf, v) = small_file();
+        let wrapped = vf.vaults[0].wrapped_key.clone();
+        let key = VaultKey::unwrap(&vf.ak, &v, &wrapped).unwrap();
+        vf.vaults.push(Vault {
+            id: v,
+            key,
+            wrapped_key: wrapped,
+            state: VaultState::new(v),
+            records: vec![],
+            commits: vec![],
+        });
+        assert_eq!(
+            VaultFile::open(&vf.to_bytes().unwrap(), &f).err(),
+            Some(passback_crypto::Error::Malformed("duplicate vault").into())
+        );
+
+        // A record no commit refers to.
+        let (mut vf, v) = small_file();
+        let extra = Record::seal(
+            &vf.vaults[0].key,
+            v,
+            new_id().unwrap(),
+            1,
+            &ItemKey::generate().unwrap(),
+            b"y",
+        )
+        .unwrap();
+        vf.vaults[0].records.push(extra);
+        assert_eq!(
+            VaultFile::open(&vf.to_bytes().unwrap(), &f).err(),
+            Some(FormatError::RecordMismatch)
+        );
+
+        // A commit whose record is missing.
+        let (mut vf, _) = small_file();
+        vf.vaults[0].records.clear();
+        assert_eq!(
+            VaultFile::open(&vf.to_bytes().unwrap(), &f).err(),
+            Some(FormatError::RecordMismatch)
+        );
+
+        // A commit for a vault the file does not contain.
+        let (mut vf, _) = small_file();
+        let ghost = new_id().unwrap();
+        let gk = VaultKey::generate().unwrap();
+        let grec = Record::seal(&gk, ghost, new_id().unwrap(), 1, &ItemKey::generate().unwrap(), b"z").unwrap();
+        let gc = VaultState::new(ghost)
+            .prepare(&[&grec], new_id().unwrap(), &vf.identity.sign, 3)
+            .unwrap();
+        vf.vaults[0].records.push(grec);
+        vf.vaults[0].commits.push(gc);
+        assert_eq!(
+            VaultFile::open(&vf.to_bytes().unwrap(), &f).err(),
+            Some(FormatError::RecordMismatch)
+        );
+    }
+
+    #[test]
+    fn header_without_password_factor_or_with_unknown_bits_is_rejected() {
+        let (vf, _) = small_file();
+        let bytes = vf.to_bytes().unwrap();
+        // magic(8) + format(2) + header len(4) + suite(1) + account(16) + salt(32) + kdf(12).
+        let at = 8 + 2 + 4 + 1 + 16 + 32 + 12;
+        assert_eq!(bytes[at], factor_mask::PASSWORD);
+        for mask in [factor_mask::SECRET_KEY, 0x10 | factor_mask::PASSWORD] {
+            let mut t = bytes.clone();
+            t[at] = mask;
+            assert!(peek(&t).is_err(), "mask {mask:#x} accepted");
+        }
+        assert_eq!(peek(b"NOTAVAULT-at-all").err(), Some(FormatError::NotAVault));
+    }
+
     #[test]
     fn any_byte_flip_is_rejected() {
         let f = [Factor::Password("pw")];

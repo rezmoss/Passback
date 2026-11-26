@@ -178,6 +178,17 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_unknown_suite_and_short_ciphertext() {
+        let k = Key32::generate().unwrap();
+        let mut enc = seal(&k, "p", b"", b"x").unwrap().to_bytes();
+        enc[0] = 2;
+        assert_eq!(SealedBox::from_bytes(&enc), Err(Error::UnsupportedSuite(2)));
+        let mut w = Writer::new();
+        w.u8(1).fixed(&[0; NONCE]).fixed(&[0; COMMIT]).bytes(&[0; 15]);
+        assert!(SealedBox::from_bytes(&w.finish()).is_err());
+    }
+
+    #[test]
     fn purpose_and_aad_boundaries_do_not_collide() {
         let k = Key32::generate().unwrap();
         let b = seal(&k, "ab", b"c", b"x").unwrap();

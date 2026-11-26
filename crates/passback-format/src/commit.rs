@@ -445,36 +445,38 @@ mod tests {
         replica.apply(&c2, &f.signers, &[&r3]).unwrap();
         assert_eq!(replica, author);
 
+        let empty = VaultState::new(f.vault);
+
         // Swapped record.
-        let mut s = VaultState::new(f.vault);
+        let mut s = empty.clone();
         let evil = rec(&f, b, 1, b"evil");
         assert_eq!(
             s.apply(&c1, &f.signers, &[&r1, &evil]),
             Err(FormatError::RecordMismatch)
         );
+        assert_eq!(s, empty);
 
-        // Commit edited after signing.
+        // Commit edited after signing (signature no longer valid).
         let mut forged = c1.clone();
         forged.item_count = 1;
-        assert!(
-            VaultState::new(f.vault)
-                .apply(&forged, &f.signers, &[&r1, &r2])
-                .is_err()
+        let mut s = empty.clone();
+        assert_eq!(
+            s.apply(&forged, &f.signers, &[&r1, &r2]),
+            Err(passback_crypto::Error::BadSignature.into())
         );
+        assert_eq!(s, empty);
 
         // Unauthorized signer.
         let mallory = SigningKey::generate().unwrap();
-        let c_m = VaultState::new(f.vault).prepare(&[&r1], f.dev, &mallory, 1).unwrap();
-        assert_eq!(
-            VaultState::new(f.vault).apply(&c_m, &f.signers, &[&r1]),
-            Err(FormatError::UnauthorizedSigner)
-        );
+        let c_m = empty.prepare(&[&r1], f.dev, &mallory, 1).unwrap();
+        let mut s = empty.clone();
+        assert_eq!(s.apply(&c_m, &f.signers, &[&r1]), Err(FormatError::UnauthorizedSigner));
+        assert_eq!(s, empty);
 
         // Skipped commit.
-        assert!(matches!(
-            VaultState::new(f.vault).apply(&c2, &f.signers, &[&r3]),
-            Err(FormatError::BrokenChain(2))
-        ));
+        let mut s = empty.clone();
+        assert_eq!(s.apply(&c2, &f.signers, &[&r3]), Err(FormatError::BrokenChain(2)));
+        assert_eq!(s, empty);
 
         // Version regression.
         let old = rec(&f, a, 1, b"again");
@@ -493,6 +495,107 @@ mod tests {
         let (i, n, path) = author.prove(&a).unwrap();
         let (v, h) = author.item(&a).unwrap();
         assert!(merkle::verify(&leaf_data(&a, v, &h), i, n, &path, &author.root()));
+    }
+
+    /// Re-sign an edited commit, as a holder of an authorized key could.
+    fn resign(c: &mut Commit, key: &SigningKey) {
+        c.signature = key.sign("vault-commit", &c.body()).unwrap();
+    }
+
+    #[test]
+    fn signed_but_invalid_commits_are_rejected_and_state_is_unchanged() {
+        let f = fx();
+        let (a, b) = (new_id().unwrap(), new_id().unwrap());
+        let mut s = VaultState::new(f.vault);
+        let r1 = rec(&f, a, 1, b"a1");
+        let c1 = s.prepare(&[&r1], f.dev, &f.key, 1).unwrap();
+        s.apply(&c1, &f.signers, &[&r1]).unwrap();
+        let before = s.clone();
+
+        let ra2 = rec(&f, a, 2, b"a2");
+        let rb1 = rec(&f, b, 1, b"b1");
+        let good = s.prepare(&[&ra2, &rb1], f.dev, &f.key, 2).unwrap();
+        type Edit = fn(&mut Commit);
+        let cases: [(&str, Edit, FormatError); 6] = [
+            ("wrong root", |c| c.root[0] ^= 1, FormatError::RootMismatch(2)),
+            ("wrong item count", |c| c.item_count += 1, FormatError::RootMismatch(2)),
+            (
+                "no changes",
+                |c| c.changes.clear(),
+                FormatError::Limit("changes per commit"),
+            ),
+            (
+                "unsorted changes",
+                |c| c.changes.reverse(),
+                passback_crypto::Error::Malformed("changes not sorted/unique").into(),
+            ),
+            (
+                "duplicate change",
+                |c| {
+                    let d = c.changes[0].clone();
+                    c.changes[1] = d;
+                },
+                passback_crypto::Error::Malformed("changes not sorted/unique").into(),
+            ),
+            ("wrong vault", |c| c.vault_id[0] ^= 1, FormatError::BrokenChain(2)),
+        ];
+        for (name, edit, want) in cases {
+            let mut c = good.clone();
+            edit(&mut c);
+            resign(&mut c, &f.key);
+            let mut t = s.clone();
+            // Records: whichever the edited commit still names, so the check under test is the one that fires.
+            let recs: Vec<&Record> = c
+                .changes
+                .iter()
+                .filter_map(|ch| [&ra2, &rb1].into_iter().find(|r| r.item_id == ch.item_id))
+                .collect();
+            let got = t.apply(&c, &f.signers, &recs).unwrap_err();
+            assert_eq!(got, want, "{name}");
+            assert_eq!(t, before, "{name}: state changed after rejection");
+        }
+
+        // Version that does not increase, signed directly (prepare would refuse).
+        let stale = rec(&f, a, 1, b"stale");
+        let mut c = good.clone();
+        c.changes = vec![Change {
+            item_id: a,
+            version: 1,
+            record_hash: stale.hash(),
+        }];
+        resign(&mut c, &f.key);
+        let mut t = s.clone();
+        assert_eq!(t.apply(&c, &f.signers, &[&stale]), Err(FormatError::VersionRegression));
+        assert_eq!(t, before);
+
+        // An extra record beyond the commit's changes.
+        let mut t = s.clone();
+        let extra = rec(&f, new_id().unwrap(), 1, b"extra");
+        assert_eq!(
+            t.apply(&good, &f.signers, &[&ra2, &rb1, &extra]),
+            Err(FormatError::RecordMismatch)
+        );
+        assert_eq!(t, before);
+
+        // A record the commit names is missing.
+        let mut t = s.clone();
+        assert_eq!(t.apply(&good, &f.signers, &[&ra2]), Err(FormatError::RecordMismatch));
+        assert_eq!(t, before);
+
+        // A valid commit by a key that may not write this vault.
+        let mallory = SigningKey::generate().unwrap();
+        let by_mallory = s.prepare(&[&ra2, &rb1], f.dev, &mallory, 2).unwrap();
+        let mut t = s.clone();
+        assert_eq!(
+            t.apply(&by_mallory, &f.signers, &[&ra2, &rb1]),
+            Err(FormatError::UnauthorizedSigner)
+        );
+        assert_eq!(t, before);
+
+        // Replaying an already-applied commit.
+        let mut t = s.clone();
+        assert_eq!(t.apply(&c1, &f.signers, &[&r1]), Err(FormatError::BrokenChain(1)));
+        assert_eq!(t, before);
     }
 
     #[test]
