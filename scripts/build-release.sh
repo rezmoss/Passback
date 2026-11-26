@@ -14,7 +14,9 @@ cd "$(dirname "$0")/.."
 # those flags (e.g. +crt-static) are for our binary and break building the tools.
 if [[ "${USE_ZIG:-false}" == "true" ]]; then
   # cargo-zigbuild finds zig through `python3 -m ziglang` when no zig binary is on PATH.
-  command -v zig >/dev/null || python3 -m pip install --quiet --user --break-system-packages ziglang==0.15.1
+  # --break-system-packages is needed on newer pip (Ubuntu 24.04) and unknown to older pip (22.04).
+  command -v zig >/dev/null || python3 -m pip install --quiet --user --break-system-packages ziglang==0.15.1 \
+    || python3 -m pip install --quiet --user ziglang==0.15.1
   command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --locked
 fi
 
