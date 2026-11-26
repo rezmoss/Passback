@@ -145,5 +145,9 @@ Please report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 
 ## License
 
-Passback is free software under the [GNU Affero General Public License v3.0 or later](LICENSE).
-If you run a modified Passback server for others, you must offer them its source.
+Passback is dual-licensed under either of
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
+
+at your option.
