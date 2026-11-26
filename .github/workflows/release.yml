@@ -153,3 +153,5 @@ jobs:
         with:
           files: dist/*
           fail_on_unmatched_files: true
+          # Tags with a pre-release suffix (v0.1.0-alpha.1) are published as pre-releases.
+          prerelease: ${{ contains(github.ref_name, '-') }}

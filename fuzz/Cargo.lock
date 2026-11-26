@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "passback-crypto"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "passback-format"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "hmac",
  "passback-crypto",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "passback-testkit"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "passback-crypto",
  "passback-format",
