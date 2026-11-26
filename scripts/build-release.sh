@@ -10,6 +10,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${TARGET:?set TARGET}"
 
+# Install build tools first, before the release RUSTFLAGS/CFLAGS below are set:
+# those flags (e.g. +crt-static) are for our binary and break building the tools.
+if [[ "${USE_ZIG:-false}" == "true" ]]; then
+  # cargo-zigbuild finds zig through `python3 -m ziglang` when no zig binary is on PATH.
+  command -v zig >/dev/null || python3 -m pip install --quiet --user --break-system-packages ziglang==0.15.1
+  command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --locked
+fi
+
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
 export PASSBACK_GIT_COMMIT="$(git rev-parse --short=12 HEAD)"
 export CARGO_INCREMENTAL=0
@@ -25,9 +33,6 @@ esac
 export RUSTFLAGS="$flags"
 
 if [[ "${USE_ZIG:-false}" == "true" ]]; then
-  # cargo-zigbuild finds zig through `python3 -m ziglang` when no zig binary is on PATH.
-  command -v zig >/dev/null || python3 -m pip install --quiet --user --break-system-packages ziglang==0.15.1
-  command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --locked
   cargo zigbuild --release --locked -p passback --target "$TARGET"
 else
   cargo build --release --locked -p passback --target "$TARGET"
