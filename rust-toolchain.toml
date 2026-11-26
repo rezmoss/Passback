@@ -1,5 +1,5 @@
 # Pinned so release builds are reproducible. CI installs exactly this version.
+# No component list: rustup would try to auto-install them on every runner (which
+# conflicts on GitHub's Ubuntu images). The lint job installs rustfmt and clippy itself.
 [toolchain]
 channel = "1.98.1"
-components = ["rustfmt", "clippy"]
-profile = "minimal"

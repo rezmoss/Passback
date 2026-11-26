@@ -714,7 +714,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "passback"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "passback-crypto"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "passback-format"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "hmac",
  "passback-crypto",
@@ -766,7 +766,7 @@ dependencies = [
 
 [[package]]
 name = "passback-harden"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "libc",
  "windows-sys",
@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "passback-store"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "passback-crypto",
  "passback-format",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "passback-testkit"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "passback-crypto",
  "passback-format",
