@@ -20,7 +20,14 @@ fn fixture(name: &str) -> String {
 fn format1_suite1_fixture_opens_with_original_contents() {
     let bytes = std::fs::read(fixture("format1-suite1.pbv")).expect("fixture present");
     let sk = SecretKey::from_bytes(SECRET_KEY);
-    let vf = VaultFile::open(&bytes, &[Factor::Password(PASSWORD), Factor::SecretKey(&sk)]).unwrap();
+    let opened = VaultFile::open(
+        &bytes,
+        &[Factor::Password(PASSWORD), Factor::SecretKey(&sk)],
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(opened.first_use.len(), 1, "a fresh device has no checkpoint");
+    let vf = opened.file;
     let v = *vf.vaults()[0].id();
     assert_eq!(vf.vaults().len(), 1);
     assert_eq!(

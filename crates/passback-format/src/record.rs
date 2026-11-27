@@ -43,6 +43,10 @@ impl Record {
         if version == 0 {
             return Err(FormatError::VersionRegression);
         }
+        // The sealed content (plaintext + 16-byte tag) must fit what `decode` accepts.
+        if plaintext.len() + 16 > MAX_CONTENT {
+            return Err(FormatError::Limit("item content too large"));
+        }
         Ok(Self {
             vault_id,
             item_id,

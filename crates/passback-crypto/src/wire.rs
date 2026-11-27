@@ -6,8 +6,9 @@
 
 use crate::{Error, Result};
 
-/// Largest single variable-length field accepted by [`Reader::bytes`] (64 MiB).
-pub const MAX_FIELD: usize = 64 * 1024 * 1024;
+/// Largest single variable-length field (1 GiB, the vault body limit). Reads return
+/// slices of the input, so this bounds work, not allocation.
+pub const MAX_FIELD: usize = 1 << 30;
 
 /// Append-only encoder.
 #[derive(Default)]
@@ -19,6 +20,13 @@ impl Writer {
     /// New empty writer.
     pub fn new() -> Self {
         Self::default()
+    }
+    /// New writer with room for `n` bytes. Use when the encoding will hold secrets, so
+    /// growing the buffer never leaves a stale copy behind in freed memory.
+    pub fn with_capacity(n: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(n),
+        }
     }
     /// Write one byte.
     pub fn u8(&mut self, v: u8) -> &mut Self {

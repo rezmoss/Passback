@@ -28,7 +28,6 @@ full = ["cli", "daemon", "web-ui", "server", "browser", "agent"]
 [dependencies]
 passback-crypto = { path = "../passback-crypto" }
 passback-format = { path = "../passback-format" }
-passback-store = { path = "../passback-store" }
 passback-harden = { path = "../passback-harden" }
 clap = { version = "4.6", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

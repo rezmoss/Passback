@@ -19,6 +19,8 @@
 
 use core::fmt;
 
+pub mod fs;
+
 /// What [`harden_process`] managed to apply.
 #[derive(Debug, Default, Clone)]
 pub struct Report {

@@ -1,5 +1,6 @@
 //! Passback data format.
 //!
+//! - [`account`]: the public header, its MAC, and unlocking.
 //! - [`record`]: one encrypted item version (wrapped item key + sealed content).
 //! - [`merkle`]: RFC 6962 Merkle trees over a vault's current items.
 //! - [`commit`]: signed, hash-chained vault commits; [`commit::VaultState`] replays
@@ -10,6 +11,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod account;
 pub mod commit;
 mod error;
 pub mod file;

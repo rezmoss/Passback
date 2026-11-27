@@ -2,7 +2,7 @@
 name = "passback-fuzz"
 version = "0.0.0"
 publish = false
-license = "AGPL-3.0-or-later"
+license = "MIT OR Apache-2.0"
 edition = "2024"
 
 [package.metadata]

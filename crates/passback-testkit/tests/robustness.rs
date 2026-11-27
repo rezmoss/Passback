@@ -48,6 +48,16 @@ fn every_surface_has_a_seed_and_mutated_seeds_never_panic() {
     }
 }
 
+#[test]
+fn the_device_state_seed_verifies_so_mutations_reach_the_mac_check() {
+    let seed = passback_testkit::sample_device_state();
+    let d = passback_vault::device::DeviceState::parse("seed.json".into(), &seed).unwrap();
+    let state = d
+        .account(&passback_testkit::SEED_ACCOUNT, &passback_testkit::seed_account_key())
+        .unwrap();
+    assert!(state.is_some(), "seed must verify under the fixed key");
+}
+
 /// Writes seed corpora for the fuzz targets into `fuzz/corpus/`. Run with `--ignored`.
 #[test]
 #[ignore]

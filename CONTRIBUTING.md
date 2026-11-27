@@ -80,5 +80,7 @@ A CI check rejects PR commits without it. Signed commits (GPG/SSH) are also requ
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the project's
-license, [AGPL-3.0-or-later](LICENSE).
+Unless you explicitly state otherwise, any contribution you intentionally submit for
+inclusion in Passback, as defined in the Apache-2.0 license, is dual-licensed as
+[Apache-2.0](LICENSE-APACHE) OR [MIT](LICENSE-MIT), without any additional terms or
+conditions.

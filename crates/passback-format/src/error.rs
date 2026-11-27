@@ -38,12 +38,19 @@ pub enum FormatError {
         /// Sequence number presented now.
         got: u64,
     },
+    /// A vault this device has seen is missing (hidden or deleted by storage).
+    #[error("vault {} is missing", hex_id(.0))]
+    VaultMissing(passback_crypto::keys::Id),
     /// Two different histories exist for the same sequence number.
     #[error("fork detected at seq {0}")]
     Fork(u64),
     /// A size or count limit was exceeded.
     #[error("limit exceeded: {0}")]
     Limit(&'static str),
+}
+
+fn hex_id(id: &[u8; 16]) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Result alias.
